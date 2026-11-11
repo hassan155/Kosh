@@ -1,0 +1,44 @@
+/* Engine-owned (Nova): this site's palette as theme tokens.
+   Written from the plan's palette; rewritten when the site is planned
+   again. Tailwind reads these through tailwind.config.js, so
+   `bg-background`, `text-foreground`, `bg-primary`, `text-muted-foreground`,
+   `border-border` and the rest are this site's colours. */
+:root {
+  --background: 0 0% 100%;
+  --foreground: 60 4.2% 13.9%;
+  --card: 60 11.1% 96.5%;
+  --card-foreground: 60 4.2% 13.9%;
+  --popover: 60 11.1% 96.5%;
+  --popover-foreground: 60 4.2% 13.9%;
+  --primary: 0 0% 9.8%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 60 2.9% 93.1%;
+  --secondary-foreground: 60 4.2% 13.9%;
+  --muted: 0 0% 94.9%;
+  --muted-foreground: 60 1.7% 35.5%;
+  --accent: 120 4.5% 91.4%;
+  --accent-foreground: 60 4.2% 13.9%;
+  --destructive: 0 72.2% 50.6%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 0 0% 87.8%;
+  --input: 0 0% 87.8%;
+  --ring: 0 0% 9.8%;
+  --brand: 132 10.2% 38.4%;
+  --nova-background: #ffffff;
+  --nova-text: #252522;
+  --nova-primary: #191919;
+  --nova-accent: #586c5c;
+  --nova-surface: #f7f7f5;
+  --nova-foreground: #252522;
+  --nova-card: #f7f7f5;
+  --nova-muted: #f2f2f2;
+  --nova-muted-foreground: #5c5c59;
+  --nova-border: #e0e0e0;
+  --nova-primary-foreground: #ffffff;
+  color-scheme: light;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}

@@ -1,0 +1,28 @@
+# Data Science Essentials
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+scipy
+
+# Web & Previews
+streamlit
+flask
+python-dotenv
+
+# Charting for generated dashboards. Baked into the image on purpose: the
+# Streamlit skill mandates plotly, and pip-installing it on first run pushed
+# boot past the orchestrator's error-check window and showed a blank preview.
+plotly
+
+# Utilities
+requests
+fpdf2
+openpyxl
+PyMuPDF
+Pillow
+
+# Data-analysis file formats: lxml powers pd.read_xml, xlrd reads legacy .xls
+lxml
+xlrd

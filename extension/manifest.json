@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Kosh — Private Meeting Listener",
+  "version": "1.0.0",
+  "description": "Capture Google Meet audio locally and save speaker-tagged notes in your Kosh warehouse.",
+  "permissions": ["activeTab", "tabs", "tabCapture", "sidePanel"],
+  "host_permissions": ["https://meet.google.com/*", "http://meet.google.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open Kosh meeting panel"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["extension/sidepanel.html", "extension/sidepanel.css", "extension/sidepanel.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*", "http://meet.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

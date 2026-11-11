@@ -1,0 +1,947 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nova App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  <script>
+(function() {
+  var API = "https://runnova.ai";
+
+  // ── location.origin IS NOT ALWAYS AN ORIGIN ───────────────────────────────
+  //
+  // The workspace preview renders in <iframe sandbox="allow-scripts …"> with
+  // no allow-same-origin, so the document has an OPAQUE origin and
+  // `location.origin` is the literal string "null" (verified in Chromium).
+  //
+  // This used to assign that string straight into API, so every call became
+  //   fetch("null/api/app/<id>/db/tasks")
+  // which the browser resolves RELATIVE to the document — landing on
+  // /workspace/null/api/... and failing CORS. The database silently did not
+  // work in the preview at all: reads returned nothing, writes were lost, and
+  // the app looked broken for reasons no generated code could be blamed for.
+  //
+  // The <base href> the preview injects points at the real API origin, so
+  // document.baseURI is the reliable answer when location is opaque. If even
+  // that fails, keeping the injected value is better than a URL that cannot
+  // resolve.
+  function novaOrigin() {
+    try {
+      if (location.origin && location.origin !== "null") return location.origin;
+    } catch (e) {}
+    try {
+      var o = new URL(document.baseURI).origin;
+      if (o && o !== "null") return o;
+    } catch (e) {}
+    return API;
+  }
+
+  if (API.indexOf("localhost") !== -1 &&
+      location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+    API = novaOrigin();
+  }
+
+  // RELATIVE WHERE THE PAGE IS GENUINELY SAME-ORIGIN, ABSOLUTE WHERE IT IS
+  // NOT. caddy/Caddyfile defines (nova_routes) with `handle /api/*` proxied to
+  // the backend, and all three host blocks import it -- the apex,
+  // *.runnova.ai, and the catch-all that serves customer domains. So on a
+  // published site a relative /api/... resolves to the right place with no
+  // CORS preflight at all, and keeps resolving after a custom domain is
+  // attached, which a hard-coded host does not.
+  //
+  // The two places it must NOT go relative are the two where the page really
+  // is somewhere else: the preview iframe (opaque origin, location.origin ===
+  // "null") and QA (localhost:8080 inside the sandbox, while the API is on
+  // 8001). Both fall back to the injected absolute base, which is the same
+  // thing novaOrigin() already exists to get right.
+  function novaApiPath(path) {
+    try {
+      var here = location.origin;
+      if (here && here !== "null") {
+        if (API.indexOf(here) === 0) return path;        // already same-origin
+        if (location.hostname !== "localhost" &&
+            location.hostname !== "127.0.0.1" &&
+            API.indexOf("localhost") === -1) return path;  // a published site
+      }
+    } catch (e) {}
+    return API + path;
+  }
+  var PROJECT = "3afac424-1c1";
+  var DB_PATH = "database.json";
+  var dbCache = null;
+
+  function uid() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  async function loadDB() {
+    if (dbCache) return dbCache;
+    try {
+      var res = await fetch(API + "/api/files/get?project_id=" + encodeURIComponent(PROJECT)
+        + "&path=" + encodeURIComponent(DB_PATH));
+      var data = await res.json();
+      var parsed = data.content ? JSON.parse(data.content) : {};
+      dbCache = (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
+    } catch (e) {
+      dbCache = {};
+    }
+    return dbCache;
+  }
+
+  async function saveDB() {
+    var res = await fetch(API + "/api/files/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_id: PROJECT,
+        path: DB_PATH,
+        content: JSON.stringify(dbCache, null, 2)
+      })
+    });
+    if (!res.ok) throw new Error("novaDB: failed to persist database.json");
+    return dbCache;
+  }
+
+  function getCollection(db, collection) {
+    if (!db[collection]) db[collection] = [];
+    return db[collection];
+  }
+
+  window.novaDB = {
+    create: async function(collection, data) {
+      var db = await loadDB();
+      var records = getCollection(db, collection);
+      var record = {
+        id: uid(),
+        data: data || {},
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      records.push(record);
+      await saveDB();
+      return record;
+    },
+    list: async function(collection, opts) {
+      opts = opts || {};
+      var db = await loadDB();
+      var records = getCollection(db, collection).slice();
+      if (opts.order !== "asc") records.reverse();
+      var offset = opts.offset || 0;
+      var limit = opts.limit || records.length;
+      return { total: records.length, records: records.slice(offset, offset + limit) };
+    },
+    get: async function(collection, id) {
+      var db = await loadDB();
+      var records = getCollection(db, collection);
+      var r = records.find(function(x) { return x.id === id; });
+      if (!r) throw new Error("novaDB: record not found: " + id);
+      return r;
+    },
+    update: async function(collection, id, data) {
+      var db = await loadDB();
+      var records = getCollection(db, collection);
+      var r = records.find(function(x) { return x.id === id; });
+      if (!r) throw new Error("novaDB: record not found: " + id);
+      Object.assign(r.data, data || {});
+      r.updated_at = new Date().toISOString();
+      await saveDB();
+      return r;
+    },
+    remove: async function(collection, id) {
+      var db = await loadDB();
+      var records = getCollection(db, collection);
+      var idx = records.findIndex(function(x) { return x.id === id; });
+      if (idx === -1) throw new Error("novaDB: record not found: " + id);
+      records.splice(idx, 1);
+      await saveDB();
+      return { status: "deleted", id: id };
+    },
+    clear: async function(collection) {
+      var db = await loadDB();
+      db[collection] = [];
+      await saveDB();
+      return { status: "cleared" };
+    },
+
+    // ── REAL ACCOUNTS AND QUERIES ────────────────────────────────────────
+    // Everything above stays exactly as it was, because sites published
+    // before this existed have that code inlined in their frozen snapshot
+    // and must keep working. What follows is additive and talks to a real
+    // server-side store: rows are per-user, filtering and sorting happen in
+    // the database, and two visitors no longer overwrite each other.
+    auth: {
+      _key: "novaAppToken:" + PROJECT,
+      // ── localStorage IS NOT ALWAYS AVAILABLE ──────────────────────────────
+      //
+      // The workspace preview renders in a sandboxed frame with an opaque
+      // origin, where touching localStorage throws SecurityError outright
+      // (verified in Chromium — not a quota or private-mode edge case).
+      //
+      // Both accessors used to swallow that and carry on, so signing in
+      // "worked" — the server really did create the account and issue a token
+      // — and then the token was dropped on the floor. token() returned "",
+      // the app was instantly signed out again, and every guarded screen
+      // stayed locked. Auth simply could not be demonstrated in the preview,
+      // which is where people look to decide whether their app works.
+      //
+      // An in-memory fallback keeps the session for the life of the page,
+      // which is exactly the right lifetime for a preview, and changes nothing
+      // on a real origin where localStorage is available and persistence
+      // across reloads is what you want.
+      // ── AND IN MEMORY IS NOT ENOUGH ON ITS OWN ───────────────────────────
+      //
+      // Memory dies at the first reload, and reloading is exactly what a
+      // generated app does the moment somebody signs in — the usual
+      // onSignedIn is window.location.reload(). So the visitor signed in,
+      // the page reloaded to show them their account, the token was gone,
+      // and they were handed the sign-in panel again. The app looked like it
+      // was refusing a password it had just accepted.
+      //
+      // window.name IS the store that works here: it survives a reload and a
+      // same-tab navigation, it is per-tab rather than shared, and it is one
+      // of the few pieces of state an opaque origin still gets to keep. Used
+      // ONLY when localStorage is unavailable, so a real origin behaves
+      // exactly as before — and namespaced + prefixed so it can never be
+      // mistaken for, or clobber, a window name an app set for itself.
+      _mem: "",
+      _nameTag: function() { return "nova.session:" + this._key + "="; },
+      _fromWindowName: function() {
+        try {
+          var tag = this._nameTag();
+          var at = String(window.name || "").indexOf(tag);
+          if (at === -1) return "";
+          return String(window.name).slice(at + tag.length).split("\n")[0];
+        } catch (e) { return ""; }
+      },
+      _toWindowName: function(t) {
+        try {
+          var tag = this._nameTag();
+          var current = String(window.name || "");
+          var at = current.indexOf(tag);
+          if (at !== -1) {
+            var rest = current.slice(at + tag.length);
+            var nl = rest.indexOf("\n");
+            current = current.slice(0, at) + (nl === -1 ? "" : rest.slice(nl + 1));
+          }
+          window.name = t ? (tag + t + "\n" + current) : current;
+        } catch (e) {}
+      },
+      _canPersist: function() {
+        try {
+          localStorage.setItem("nova.probe", "1");
+          localStorage.removeItem("nova.probe");
+          return true;
+        } catch (e) { return false; }
+      },
+      token: function() {
+        try {
+          var v = localStorage.getItem(this._key);
+          if (v) return v;
+        } catch (e) {}
+        var held = this._mem || this._fromWindowName();
+        if (held) return held;
+        // The owner opened the preview "as" a role: a preview-only session the
+        // server put into the page. Published sites never carry one.
+        try { return (window.__NOVA_APP_DB__ && window.__NOVA_APP_DB__.previewSession) || ""; } catch (e) { return ""; }
+      },
+      _store: function(t) {
+        this._mem = t || "";
+        try { if (t) localStorage.setItem(this._key, t); else localStorage.removeItem(this._key); } catch (e) {}
+        if (!this._canPersist()) this._toWindowName(t || "");
+      },
+      signup: async function(email, password, name) {
+        var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/auth/signup", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: email, password: password, name: name || "" })
+        });
+        var d = await res.json();
+        if (!res.ok) throw new Error(d.detail || "Sign up failed");
+        this._store(d.token);
+        return d.user;
+      },
+      login: async function(email, password) {
+        var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/auth/login", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: email, password: password })
+        });
+        var d = await res.json();
+        if (!res.ok) throw new Error(d.detail || "Login failed");
+        this._store(d.token);
+        return d.user;
+      },
+      user: async function() {
+        if (!this.token()) return null;
+        var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/auth/me", {
+          headers: { "Authorization": "Bearer " + this.token() }
+        });
+        if (!res.ok) return null;
+        return (await res.json()).user;
+      },
+      // ── SIGN IN WITH NOVA (one click, nothing to configure) ──────────────
+      //
+      // Opens NOVA's sign-in in a popup and polls this project's endpoint
+      // until it reports a session. Polling rather than postMessage because
+      // the opener may be a sandboxed preview frame with an opaque origin —
+      // there would be no origin to address the message to, and posting a
+      // session token to "*" is not worth the convenience.
+      //
+      // The popup must be opened SYNCHRONOUSLY inside the click that called
+      // this, or the browser blocks it. So the window is created first and
+      // pointed at the URL once the server answers.
+      withNova: async function() {
+        var popup = window.open("", "nova_signin", "width=520,height=680");
+        if (!popup) throw new Error("Please allow pop-ups to sign in.");
+        try {
+          var startRes = await fetch(
+            API + "/api/app/" + encodeURIComponent(PROJECT) + "/auth/nova/start",
+            { method: "POST" });
+          if (!startRes.ok) throw new Error("Sign-in is unavailable right now.");
+          var start = await startRes.json();
+          // The popup can be severed from us (see below); never let that
+          // abort the flow.
+          try { popup.location.href = start.login_url; } catch (e0) {}
+
+          // popup.closed IS NOT A CANCEL SIGNAL (11 Nov 2026). When the popup
+          // passes through a page sent with Cross-Origin-Opener-Policy (Google
+          // sign-in, which visitors not already logged into NOVA must cross),
+          // Chrome severs the opener relationship and `closed` reads true while
+          // the window is still open -- the old code threw "cancelled" at once.
+          // So keep polling until success, a terminal server error or the
+          // deadline. If it has read closed for a long stretch AND the server
+          // still says pending, the visitor really did close it: give up then.
+          // A severed popup reads closed for the WHOLE sign-in, so the grace
+          // must outlast a real Google login with 2FA, not just a blip.
+          var CLOSED_GRACE = 120 * 1000;
+          var closedSince = 0;
+          var deadline = Date.now() + 3 * 60 * 1000;   // give up after 3 minutes
+          while (Date.now() < deadline) {
+            var isClosed = false;
+            try { isClosed = popup.closed; } catch (e1) { isClosed = true; }
+            if (!isClosed) closedSince = 0;
+            else if (!closedSince) closedSince = Date.now();
+            else if (Date.now() - closedSince > CLOSED_GRACE)
+              throw new Error("Sign-in was cancelled.");
+            await new Promise(function (r) { setTimeout(r, 1200); });
+            var pollRes, d = null;
+            try {
+              pollRes = await fetch(
+                API + "/api/app/" + encodeURIComponent(PROJECT)
+                    + "/auth/nova/poll?session_id=" + encodeURIComponent(start.session_id)
+                    + "&binding=" + encodeURIComponent(start.binding || ""));
+              d = await pollRes.json().catch(function () { return null; });
+            } catch (e3) { continue; }   // network blip: keep trying
+            // TERMINAL: the server says this session is over (the one-time
+            // code is already spent, so polling on can never succeed). Show
+            // its message instead of timing out 3 minutes later. 5xx / 408 /
+            // 429 are transient and keep polling.
+            if (d && d.status === "error")
+              throw new Error(d.message || "Sign-in did not complete. Please try again.");
+            if (!pollRes.ok) {
+              if (pollRes.status >= 500 || pollRes.status === 408 || pollRes.status === 429) continue;
+              throw new Error("Sign-in did not complete. Please try again.");
+            }
+            if (d && d.status === "ok" && d.token) {
+              this._store(d.token);
+              try { popup.close(); } catch (e) {}
+              return d.user;
+            }
+          }
+          throw new Error("Sign-in timed out. Please try again.");
+        } catch (e) {
+          try { if (popup && !popup.closed) popup.close(); } catch (e2) {}
+          throw e;
+        }
+      },
+
+      /** Email a reset link. Always resolves — never says whether the
+       *  address has an account here. */
+      requestPasswordReset: async function(email, returnTo) {
+        var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/auth/password/request", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: email, returnTo: returnTo || "" })
+        });
+        var d = await res.json().catch(function () { return {}; });
+        return d.message || "If that address has an account, a reset link is on its way.";
+      },
+
+      /** Spend a reset token and sign in with the new password. */
+      confirmPasswordReset: async function(token, password) {
+        var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/auth/password/confirm", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: token, password: password })
+        });
+        var d = await res.json();
+        if (!res.ok) throw new Error(d.detail || "That reset link is not valid.");
+        this._store(d.token);
+        return d.user;
+      },
+
+      logout: async function() {
+        try {
+          await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/auth/logout", {
+            method: "POST", headers: { "Authorization": "Bearer " + this.token() }
+          });
+        } catch (e) {}
+        this._store("");
+        return true;
+      }
+    },
+
+    // ── FILES ────────────────────────────────────────────────────────────
+    // Uploads go through multipart, not base64 in a record: a 2 MB photo
+    // becomes 2.7 MB of JSON that way, inside a row meant for fields.
+    files: {
+      upload: async function(file) {
+        var fd = new FormData();
+        fd.append("file", file);
+        var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/files", {
+          method: "POST",
+          // No Content-Type: the browser must set the multipart boundary.
+          headers: window.novaDB._authHeaders(),
+          body: fd
+        });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(d.detail || "Upload failed");
+        d.url = API + d.url;   // absolute, so it works in an <img src> anywhere
+        return d;
+      },
+      list: async function(opts) {
+        opts = opts || {};
+        var qs = "?limit=" + (opts.limit || 50) + "&offset=" + (opts.offset || 0);
+        if (opts.mine) qs += "&mine=true";
+        var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/files" + qs, {
+          headers: window.novaDB._authHeaders()
+        });
+        if (!res.ok) throw new Error("novaDB: could not list files");
+        var d = await res.json();
+        (d.files || []).forEach(function (f) { f.url = API + f.url; });
+        return d;
+      },
+      remove: async function(id) {
+        var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT)
+          + "/files/" + encodeURIComponent(id), {
+          method: "DELETE", headers: window.novaDB._authHeaders()
+        });
+        if (!res.ok) throw new Error("novaDB: delete failed");
+        return await res.json();
+      }
+    },
+
+    _authHeaders: function(extra) {
+      var h = extra || {};
+      var t = window.novaDB.auth.token();
+      if (t) h["Authorization"] = "Bearer " + t;
+      return h;
+    },
+
+    /** This project's id. Exported because a page cannot construct one of
+     *  Nova's own URLs without it, and every helper below needs it. */
+    projectId: PROJECT,
+
+    /**
+     * Outside services the owner connected — Shopify, Stripe, WordPress and
+     * the rest — read through Nova, which holds the credentials server-side.
+     *
+     * THE PAGE NEVER SEES A KEY AND NEVER CALLS A PROVIDER. It asks Nova,
+     * Nova asks the provider with a credential read on the server, and what
+     * comes back is field-scoped. A token in client JavaScript is a token in
+     * view-source.
+     *
+     * NOTHING HERE THROWS. A connector is the one part of a generated site
+     * that can be switched off by somebody else, at any time, without a
+     * rebuild — so "the owner disconnected Shopify this morning" arrives as a
+     * value to branch on rather than an exception that blanks the page. Every
+     * call answers { ok, status, data, error }.
+     */
+    connectors: {
+      /** What is connected right now, and what each may be asked for. */
+      list: async function() {
+        return await window.novaDB.connectors._call("GET", "/connectors", null);
+      },
+      /** A public read: connectors.read("shopify", "products", {limit: 24}) */
+      read: async function(connectorId, resource, params) {
+        var qs = "";
+        var given = params || {};
+        for (var k in given) {
+          if (!Object.prototype.hasOwnProperty.call(given, k)) continue;
+          if (given[k] === undefined || given[k] === null) continue;
+          qs += (qs ? "&" : "?") + encodeURIComponent(k) + "=" +
+                encodeURIComponent(given[k]);
+        }
+        return await window.novaDB.connectors._call(
+          "GET",
+          "/connectors/" + encodeURIComponent(connectorId) + "/" +
+            encodeURIComponent(resource) + qs,
+          null);
+      },
+      /** Something happening in the owner's account. Needs their write grant;
+       *  answers status 403 without it. */
+      action: async function(connectorId, name, body) {
+        return await window.novaDB.connectors._call(
+          "POST",
+          "/connectors/" + encodeURIComponent(connectorId) + "/" +
+            encodeURIComponent(name),
+          body || {});
+      },
+
+      _call: async function(method, path, body) {
+        var url = novaApiPath("/api/app/" + encodeURIComponent(PROJECT) + path);
+        var init = { method: method,
+                     headers: window.novaDB._authHeaders(
+                       body ? { "Content-Type": "application/json" } : {}) };
+        if (body) init.body = JSON.stringify(body);
+        var res;
+        try {
+          res = await fetch(url, init);
+        } catch (e) {
+          // The network, not the provider. Same shape either way, so a page
+          // has one branch instead of two.
+          return { ok: false, status: 0, data: null,
+                   error: "could not reach the service" };
+        }
+        var payload = null;
+        try { payload = await res.json(); } catch (e) {}
+        if (!res.ok) {
+          return { ok: false, status: res.status, data: payload,
+                   error: (payload && (payload.detail || payload.error)) ||
+                          ("request failed (" + res.status + ")") };
+        }
+        // A read can answer 200 with {ok: false} when the provider itself
+        // failed. That is not an error in the call, and the distinction is
+        // worth keeping: the site is reachable, the shop is not.
+        if (payload && payload.ok === false) {
+          return { ok: false, status: res.status, data: payload,
+                   error: payload.error || "that service could not be reached" };
+        }
+        return { ok: true, status: res.status, data: payload, error: "" };
+      }
+    },
+
+    /** Server-backed create. Rows created while signed in belong to that user. */
+    add: async function(collection, data) {
+      var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/db/" + encodeURIComponent(collection), {
+        method: "POST",
+        headers: window.novaDB._authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ data: data })
+      });
+      if (!res.ok) throw new Error("novaDB: create failed");
+      return await res.json();
+    },
+
+    /** One record by id, or null. */
+    one: async function(collection, id) {
+      var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/db/"
+        + encodeURIComponent(collection) + "/" + encodeURIComponent(id), {
+        headers: window.novaDB._authHeaders()
+      });
+      if (res.status === 404 || res.status === 403) return null;
+      if (!res.ok) throw new Error("novaDB: read failed");
+      return await res.json();
+    },
+
+    /** Server-backed query.
+     *  opts: {limit, offset, order, mine, whereKey, whereValue, where, sort, search} */
+    query: async function(collection, opts) {
+      opts = opts || {};
+      var qs = "?limit=" + (opts.limit || 50) + "&offset=" + (opts.offset || 0) +
+               "&order=" + (opts.order || "desc");
+      if (opts.mine) qs += "&mine=true";
+      if (opts.whereKey) {
+        qs += "&where_key=" + encodeURIComponent(opts.whereKey) +
+              "&where_value=" + encodeURIComponent(opts.whereValue == null ? "" : opts.whereValue);
+      }
+      if (opts.where && typeof opts.where === "object") {
+        qs += "&where=" + encodeURIComponent(JSON.stringify(opts.where));
+      }
+      if (opts.sort)   qs += "&sort=" + encodeURIComponent(opts.sort);
+      if (opts.search) qs += "&search=" + encodeURIComponent(opts.search);
+      var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/db/" + encodeURIComponent(collection) + qs, {
+        headers: window.novaDB._authHeaders()
+      });
+      if (!res.ok) throw new Error("novaDB: query failed");
+      return await res.json();
+    },
+
+    edit: async function(collection, id, data) {
+      var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/db/" + encodeURIComponent(collection) + "/" + encodeURIComponent(id), {
+        method: "PATCH",
+        headers: window.novaDB._authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ data: data })
+      });
+      if (!res.ok) throw new Error("novaDB: update failed");
+      return await res.json();
+    },
+
+    drop: async function(collection, id) {
+      var res = await fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/db/" + encodeURIComponent(collection) + "/" + encodeURIComponent(id), {
+        method: "DELETE", headers: window.novaDB._authHeaders()
+      });
+      if (!res.ok) throw new Error("novaDB: delete failed");
+      return await res.json();
+    }
+  };
+
+  // ── OWNER HAND-OFF ───────────────────────────────────────────────────────
+  // NOVA opens the site with #nova_owner=<one-time code>. Strip it from the
+  // address FIRST so it never lingers in history or a copied link, then trade
+  // it for the owner's session. Failures stay in the console only.
+  try {
+    var m = /[#&]nova_owner=([^&]+)/.exec(location.hash || "");
+    if (m) {
+      var code = decodeURIComponent(m[1]);
+      try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
+      fetch(API + "/api/app/" + encodeURIComponent(PROJECT) + "/auth/owner-exchange", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code })
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (x) {
+          if (x.ok && x.d && x.d.token) {
+            window.novaDB.auth._store(x.d.token);
+            try { window.dispatchEvent(new CustomEvent("nova:auth", { detail: x.d.user })); } catch (e) {}
+            // The page has usually rendered as a signed-out visitor by now;
+            // load it again so it shows the owner's admin view.
+            try { location.reload(); } catch (e) {}
+          } else if (window.console) console.warn("novaDB: owner sign-in did not complete");
+        })
+        .catch(function () { if (window.console) console.warn("novaDB: owner sign-in did not complete"); });
+    }
+  } catch (e) {}
+})();
+</script>
+<script>
+(function() {
+  var API = "https://runnova.ai";
+  // LIVE-SITE FALLBACK: the base is baked in at build time on the builder's
+  // machine (usually localhost:8001). If a visitor is viewing this page from
+  // any other host while API still says localhost, localhost is THEIR
+  // machine -- assume the page is served from the backend's own origin
+  // instead so healing keeps working on deployed sites.
+  // A sandboxed preview frame has no origin at all: hostname "" and origin the
+  // string "null", which made every heal ask "null/api/assets/resolve" under
+  // the page's own path (Rosa's Bakery 2026-10-23). Only a real origin wins.
+  if (API.indexOf("localhost") !== -1 && location.hostname &&
+      location.origin && location.origin !== "null" &&
+      location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+    API = location.origin;
+  }
+  var PROJECT = "3afac424-1c1";
+
+  window.__novaAssetHeals = window.__novaAssetHeals || [];
+
+  var _pending = [];             // in-flight resolve tasks; __novaHealAssets awaits these
+  var _resolveCache = {};      // filename -> Promise<string|null>, dedupes concurrent requests
+  var _permanentlyFailed = {}; // filename -> true, never retry within this page load
+
+  function basename(path) {
+    if (!path) return "";
+    var clean = path.split("?")[0].split("#")[0];
+    var parts = clean.split("/");
+    return parts[parts.length - 1] || "";
+  }
+
+  function looksLikeAssetPath(path) {
+    if (!path) return false;
+    // Never touch already-absolute external URLs (http(s)://, data:, blob:)
+    // -- those failing is a different, real problem we should NOT mask.
+    if (/^(https?:)?\/\//i.test(path)) return false;
+    if (path.indexOf("data:") === 0 || path.indexOf("blob:") === 0) return false;
+    return true;
+  }
+
+  // NOVA'S OWN GENERATED MEDIA IS NEVER A PLACEHOLDER. A clip and its posters
+  // live under `media/` (`/public/media/` on a plain HTML build), written by
+  // the cinematic pipeline -- they are the real files, not a guess at one.
+  // Nothing the resolver has can stand in for them: its only answer for an
+  // anonymous visitor is a gradient, and swapping a working poster for that
+  // turned every frame of a generated-video site grey. A clip that genuinely
+  // fails to load is left as it is, where the gap can be seen and fixed.
+  //
+  // Matched on the engine's own content-addressed name (`v` + 16 hex, see
+  // core/cinematic_media.media_id_for), not on `media/` alone: a placeholder
+  // a model invented under /media/ is still a placeholder and still heals.
+  function isEngineMedia(path) {
+    var clean = String(path || "").split("?")[0].split("#")[0];
+    return /(^|\/)media\/v[0-9a-f]{16}(-poster(-mobile)?)?\.[a-z0-9]+$/i.test(clean);
+  }
+
+  // WHICH PLACEHOLDERS MAY BE ANSWERED WITH A PICTURE. Mirrors
+  // `core/asset_kinds.py` -- the server side of this same decision. Every
+  // fallback below, and every fallback the resolve endpoint has, is an IMAGE,
+  // and this healer fires for <video> and <source> elements too. Without this
+  // test a `.mp4` that failed to load was replaced by a JPEG: a video element
+  // that can only fire `error` again, permanently, because each element is
+  // marked heal-attempted exactly once.
+  var IMAGE_EXTS = /\.(jpg|jpeg|png|webp|gif|avif|svg|bmp|ico)$/i;
+  // A name with NO extension is an image, as `kind_for` decides server-side.
+  var ANY_EXT = /\.[a-z0-9]+$/i;
+  function imageFallbackAllowed(filename) {
+    var name = filename || "";
+    return !ANY_EXT.test(name) || IMAGE_EXTS.test(name);
+  }
+
+  // THE QUIET LAST RESORT: a soft neutral gradient, inline. Never a random
+  // photograph (one served a sea cave for a dinner plate) and never the
+  // broken-image glyph -- a slot that loads, in a colour that reads as chosen.
+  var PLACEHOLDER = "data:image/svg+xml;base64," + btoa(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" ' +
+    'preserveAspectRatio="none"><defs><linearGradient id="g" x1="0" y1="0" ' +
+    'x2="1" y2="1"><stop offset="0" stop-color="#ece9e4"/><stop offset="1" ' +
+    'stop-color="#c9c3ba"/></linearGradient></defs>' +
+    '<rect width="1200" height="800" fill="url(#g)"/></svg>');
+
+  // A ROOT PATH UNDER A <base> THAT IS NOT THE ROOT. A root-relative path ignores
+  // the base, so in a published frame it asks the API host's own root and
+  // misses the file the build wrote under the deployment. The same path under
+  // the base is that file. Null when there is no such base (a real origin, QA,
+  // a plain page), so nothing changes where the path already worked.
+  function underBase(url) {
+    try {
+      if (!document.querySelector("base[href]")) return null;
+      var base = new URL(document.baseURI);
+      var u = new URL(url, base.href);
+      if (u.origin !== base.origin) return null;
+      if (base.pathname === "/" || u.pathname.indexOf(base.pathname) === 0) return null;
+      var local = new URL(u.pathname.replace(/^\/+/, "") + u.search, base.href).href;
+      return local === u.href ? null : local;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // The project's own file first, then the resolver.
+  function localThenResolve(url, filename, altHint) {
+    var local = underBase(url);
+    if (!local) return resolveAsset(filename, altHint);
+    return probeImage(local).then(function(ok) {
+      return ok ? local : resolveAsset(filename, altHint);
+    });
+  }
+
+  function resolveAsset(filename, altHint) {
+    if (_permanentlyFailed[filename]) return Promise.resolve(null);
+    if (_resolveCache[filename]) return _resolveCache[filename];
+
+    var url = API + "/api/assets/resolve?project_id=" + encodeURIComponent(PROJECT)
+      + "&filename=" + encodeURIComponent(filename)
+      + (altHint ? "&alt=" + encodeURIComponent(altHint.slice(0, 200)) : "");
+
+    // NO CREDENTIALS, DELIBERATELY. The resolver reads no session to decide
+    // anything -- an anonymous caller gets an answer, not a refusal. Sending
+    // cookies only bought the authenticated stock search over the generation
+    // fallback, and it cost far more than that: a credentialed cross-origin
+    // request can only be answered by an allowlisted origin, so every heal
+    // from QA (http://localhost:8080) and from the sandboxed preview
+    // (Origin: null) was refused at the preflight and reported to the user as
+    // a fault in their site. Anonymous, the request is answerable from
+    // anywhere -- see _ANON_CORS_EXACT_PATHS in server.py.
+    var p = fetch(url)
+      .then(function(res) {
+        if (!res.ok) throw new Error("resolve failed: " + res.status);
+        return res.json();
+      })
+      .then(function(data) {
+        if (data && data.url) return data.url;
+        // `{"url": null, "source": "unresolved"}` is the server saying it has
+        // no source for this MEDIUM (see core/asset_kinds.py). That is a
+        // final answer, not a failure to retry or paper over.
+        if (data && data.source === "unresolved") {
+          _permanentlyFailed[filename] = true;
+          return null;
+        }
+        throw new Error("no url in response");
+      })
+      .catch(function() {
+        // NEVER leave an empty image: if the resolve API itself is down, the
+        // slot gets the local gradient -- the same answer every time, and
+        // nothing fetched from anywhere.
+        //
+        // IMAGES ONLY. A video/model/audio placeholder gets no answer at all:
+        // an empty slot is a gap someone can fix, a picture in a <video> is not.
+        if (!imageFallbackAllowed(filename)) {
+          _permanentlyFailed[filename] = true;
+          return null;
+        }
+        return PLACEHOLDER;
+      });
+
+    _resolveCache[filename] = p;
+    return p;
+  }
+
+  function recordHeal(kind, filename, originalPath, resolvedUrl) {
+    window.__novaAssetHeals.push({
+      kind: kind,               // "img" | "video" | "source" | "poster" | "background"
+      filename: filename,
+      original: originalPath,
+      resolved: resolvedUrl,
+      healed_at: Date.now()
+    });
+  }
+
+  function healImgOrVideoLike(el) {
+    if (!el || el.getAttribute("data-nova-heal-attempted") === "1") return;
+    el.setAttribute("data-nova-heal-attempted", "1");
+
+    var rawPath = el.getAttribute("src");
+    if (!looksLikeAssetPath(rawPath)) return;
+    if (isEngineMedia(rawPath)) return;
+
+    var filename = basename(rawPath);
+    if (!filename) return;
+
+    var altHint = el.getAttribute("alt") || el.getAttribute("aria-label") || "";
+    var kind = el.tagName === "VIDEO" ? "video" : el.tagName === "SOURCE" ? "source" : "img";
+
+    var task = (kind === "img"
+        ? localThenResolve(rawPath, filename, altHint)
+        : resolveAsset(filename, altHint)).then(function(resolvedUrl) {
+      if (!resolvedUrl) return;
+      el.setAttribute("src", resolvedUrl);
+      recordHeal(kind, filename, rawPath, resolvedUrl);
+      // <source> elements need their parent <video>/<picture> reloaded
+      // to actually pick up the new src.
+      var parent = el.parentElement;
+      if (el.tagName === "SOURCE" && parent && typeof parent.load === "function") {
+        parent.load();
+      }
+    });
+    _pending.push(task);
+  }
+
+  function healPoster(el) {
+    if (!el || el.getAttribute("data-nova-heal-poster-attempted") === "1") return;
+    el.setAttribute("data-nova-heal-poster-attempted", "1");
+
+    var rawPath = el.getAttribute("poster");
+    if (!looksLikeAssetPath(rawPath)) return;
+    if (isEngineMedia(rawPath)) return;
+    var filename = basename(rawPath);
+    if (!filename) return;
+
+    // ONLY A POSTER THAT ACTUALLY FAILS. The rescan reaches every <video> with
+    // a poster, and this used to replace each one unconditionally -- a poster
+    // that had loaded fine became whatever the resolver answered, which for a
+    // visitor is a gradient. A <video> fires no error for a broken poster, so
+    // the image itself is asked first.
+    var task = probeImage(rawPath).then(function(ok) {
+      if (ok) return null;
+      return resolveAsset(filename, "video poster image");
+    }).then(function(resolvedUrl) {
+      if (!resolvedUrl) return;
+      el.setAttribute("poster", resolvedUrl);
+      recordHeal("poster", filename, rawPath, resolvedUrl);
+    });
+    _pending.push(task);
+  }
+
+  function probeImage(url) {
+    return new Promise(function(resolve) {
+      var probe = new Image();
+      probe.onload = function() { resolve(true); };
+      probe.onerror = function() { resolve(false); };
+      probe.src = url;
+    });
+  }
+
+  function extractBackgroundUrl(computedValue) {
+    // computedValue is a CSS url(), quoted or not, absolute or relative.
+    // (No example path here: this script is injected into every page, and
+    // the asset pass reads a page's text -- an example would be fetched.)
+    var m = /url\((['"]?)(.*?)\1\)/.exec(computedValue || "");
+    return m ? m[2] : null;
+  }
+
+  function scanBackgrounds() {
+    var elements = document.querySelectorAll("*");
+    var tasks = [];
+    for (var i = 0; i < elements.length; i++) {
+      var el = elements[i];
+      if (el.getAttribute("data-nova-heal-bg-attempted") === "1") continue;
+
+      var style = window.getComputedStyle(el);
+      var bgImage = style.backgroundImage;
+      if (!bgImage || bgImage === "none") continue;
+
+      var bgUrl = extractBackgroundUrl(bgImage);
+      if (!bgUrl || !looksLikeAssetPath(bgUrl) || isEngineMedia(bgUrl)) continue;
+
+      el.setAttribute("data-nova-heal-bg-attempted", "1");
+      var filename = basename(bgUrl);
+      if (!filename) continue;
+
+      (function(el, bgUrl, filename) {
+        var task = probeImage(bgUrl).then(function(ok) {
+          if (ok) return; // background already loads fine, nothing to heal
+          return localThenResolve(bgUrl, filename, "background image").then(function(resolvedUrl) {
+            if (!resolvedUrl) return;
+            el.style.setProperty("background-image", "url(\"" + resolvedUrl + "\")", "important");
+            recordHeal("background", filename, bgUrl, resolvedUrl);
+          });
+        });
+        tasks.push(task);
+      })(el, bgUrl, filename);
+    }
+    return Promise.all(tasks);
+  }
+
+  function rescanBrokenMediaAlreadyInDom() {
+    // Catches elements whose error event fired before this script attached
+    // its listeners -- rare, but possible if media was already cached-broken.
+    var media = document.querySelectorAll("img, video");
+    for (var i = 0; i < media.length; i++) {
+      var el = media[i];
+      var isBroken = el.tagName === "IMG"
+        ? (el.complete && el.naturalWidth === 0 && el.getAttribute("src"))
+        : (el.error && el.getAttribute("src"));
+      if (isBroken) {
+        healImgOrVideoLike(el);
+      }
+      if (el.tagName === "VIDEO" && el.getAttribute("poster")) {
+        healPoster(el);
+      }
+    }
+    return Promise.resolve();
+  }
+
+  // Capture-phase listener on document catches 'error' events from any
+  // descendant <img>/<video>/<source>. Media error events don't bubble, but
+  // capture-phase traversal still reaches ancestor listeners regardless --
+  // this is what lets one listener cover every element without per-element
+  // wiring, no matter how the element or its src was created.
+  document.addEventListener("error", function(e) {
+    var el = e.target;
+    if (!el || !el.tagName) return;
+    if (el.tagName === "IMG" || el.tagName === "VIDEO" || el.tagName === "SOURCE") {
+      healImgOrVideoLike(el);
+    }
+  }, true);
+
+  // window.__novaHealAssets(): explicit, awaitable entry point. QA calls
+  // this after page load + interaction instead of racing a fixed sleep
+  // against unpredictable image-search/generation latency. Real visitors
+  // get it automatically via autoRun() below.
+  window.__novaHealAssets = function() {
+    return rescanBrokenMediaAlreadyInDom()
+      .then(scanBackgrounds)
+      .then(function() { return Promise.all(_pending); })
+      .then(function() { return window.__novaAssetHeals; });
+  };
+
+  function autoRun() {
+    setTimeout(function() {
+      window.__novaHealAssets();
+    }, 1200);
+  }
+  if (document.readyState === "complete") {
+    autoRun();
+  } else {
+    window.addEventListener("load", autoRun);
+  }
+})();
+</script>
+</body>
+</html>

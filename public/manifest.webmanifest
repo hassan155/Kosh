@@ -1,0 +1,11 @@
+{
+  "name": "Kosh offline PWA meeting warehouse and PDF power tool",
+  "short_name": "Kosh",
+  "description": "A device-local archive for meeting audio, notes, and working PDFs.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "orientation": "any"
+}

@@ -1,0 +1,138 @@
+{
+  "tables": {
+    "audio_files": {
+      "access": {
+        "create": "owner",
+        "delete": "owner",
+        "read": "owner",
+        "update": "owner"
+      },
+      "columns": {
+        "duration_seconds": "int=0",
+        "file_key": "text!",
+        "meeting_ref": "ref:meetings",
+        "mime_type": "text!"
+      },
+      "indexes": [
+        [
+          "meeting_ref"
+        ]
+      ],
+      "owned": true
+    },
+    "meeting_tags": {
+      "access": {
+        "create": "owner",
+        "delete": "owner",
+        "read": "owner",
+        "update": "owner"
+      },
+      "columns": {
+        "meeting_ref": "ref:meetings!",
+        "tag_ref": "ref:tags!"
+      },
+      "owned": true
+    },
+    "meetings": {
+      "access": {
+        "create": "owner",
+        "delete": "owner",
+        "read": "owner",
+        "update": "owner"
+      },
+      "columns": {
+        "action_items": "jsonb",
+        "duration_seconds": "int=0",
+        "meeting_date": "timestamptz!",
+        "notes": "text",
+        "preview": "text",
+        "summary": "text",
+        "title": "text!",
+        "transcript": "jsonb",
+        "transcription_status": "enum:queued,processing,complete,error=queued"
+      },
+      "indexes": [
+        [
+          "meeting_date"
+        ],
+        [
+          "title"
+        ]
+      ],
+      "owned": true
+    },
+    "pdf_tags": {
+      "access": {
+        "create": "owner",
+        "delete": "owner",
+        "read": "owner",
+        "update": "owner"
+      },
+      "columns": {
+        "pdf_ref": "ref:pdfs!",
+        "tag_ref": "ref:tags!"
+      },
+      "owned": true
+    },
+    "pdfs": {
+      "access": {
+        "create": "owner",
+        "delete": "owner",
+        "read": "owner",
+        "update": "owner"
+      },
+      "columns": {
+        "file_key": "text!",
+        "page_count": "int=0",
+        "page_order": "jsonb",
+        "page_rotations": "jsonb",
+        "pdf_date": "timestamptz!",
+        "redactions": "jsonb",
+        "searchable_text": "text",
+        "signatures": "jsonb",
+        "title": "text!"
+      },
+      "indexes": [
+        [
+          "pdf_date"
+        ],
+        [
+          "title"
+        ]
+      ],
+      "owned": true
+    },
+    "settings": {
+      "access": {
+        "create": "owner",
+        "delete": "owner",
+        "read": "owner",
+        "update": "owner"
+      },
+      "columns": {
+        "preferences": "jsonb",
+        "theme": "enum:light,dark,system=system"
+      },
+      "owned": true
+    },
+    "tags": {
+      "access": {
+        "create": "owner",
+        "delete": "owner",
+        "read": "owner",
+        "update": "owner"
+      },
+      "columns": {
+        "color": "enum:sage,blue,lilac,ochre=sage",
+        "label": "text!"
+      },
+      "indexes": [
+        [
+          "label"
+        ]
+      ],
+      "owned": true
+    }
+  },
+  "version": 1
+}
